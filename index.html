@@ -1,0 +1,884 @@
+<title>Piecework: Cityscapes</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<style>
+/* Layout: a jigsaw table for Piecework. Two slim control rows, then one canvas filling the rest of the screen: the frame on top (or left, on wide screens) and loose pieces on the felt. Deliberately single-theme: a dark table makes both night and day pictures read. */
+:root {
+  --bg: #121719;
+  --felt: #1d2f2b;
+  --ink: #ebe6d8;
+  --muted: #8e978f;
+  --line: #2c3a37;
+  --lamp: #ffcf6b;
+  --display: "Big Shoulders Display", "Oswald", "Arial Narrow", sans-serif;
+  --body: "Atkinson Hyperlegible", "Helvetica Neue", Arial, sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; background: var(--bg); color: var(--ink); }
+body {
+  font-family: var(--body);
+  padding-left: max(12px, env(safe-area-inset-left, 0px));
+  padding-right: max(12px, env(safe-area-inset-right, 0px));
+  padding-block: 10px 8px;
+  box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 8px;
+  -webkit-user-select: none; user-select: none;
+}
+.top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; max-width: 960px; width: 100%; margin: 0 auto; }
+h1 { font-family: var(--display); font-weight: 800; font-size: 1.55rem; line-height: 1; margin: 0; text-transform: uppercase; letter-spacing: .02em; }
+h1 span { color: var(--lamp); font-weight: 600; font-size: .62em; letter-spacing: .06em; white-space: nowrap; }
+.status { font-size: .88rem; color: var(--muted); font-variant-numeric: tabular-nums; display: flex; gap: 12px; align-items: baseline; }
+.status b { color: var(--ink); font-weight: 700; }
+.opts { display: flex; gap: 6px 10px; flex-wrap: wrap; align-items: center; max-width: 960px; width: 100%; margin: 0 auto; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; background: color-mix(in oklab, var(--felt) 50%, var(--bg)); }
+.seg button { border: 0; background: transparent; color: var(--muted); font: 700 .8rem var(--body); padding: 6px 11px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.btn { border: 1px solid var(--lamp); background: transparent; color: var(--lamp); font: 700 .8rem var(--body); padding: 6px 13px; border-radius: 999px; cursor: pointer; touch-action: none; }
+.btn.hold:active, .btn.hold.on { background: var(--lamp); color: var(--bg); }
+.btn:focus-visible, .seg button:focus-visible { outline: 2px solid var(--lamp); outline-offset: 2px; }
+.stage { flex: 1 1 auto; min-height: 360px; max-width: 960px; width: 100%; margin: 0 auto; position: relative; }
+canvas#table { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; border-radius: 6px; cursor: grab; }
+canvas#table.dragging { cursor: grabbing; }
+footer { text-align: center; font-size: .78rem; }
+footer a { color: var(--muted); font-style: italic; text-decoration: none; }
+</style>
+
+<div class="top">
+  <h1>Piecework <span>Cityscapes Edition</span></h1>
+  <div class="status" aria-live="polite"><span id="placed"></span><span id="clock">0:00</span><span id="peeks"></span></div>
+</div>
+<div class="opts">
+  <div class="seg" role="group" aria-label="City"><button id="c-today" type="button" aria-pressed="true">Today</button><button id="c-random" type="button" aria-pressed="false">Random</button></div>
+  <div class="seg" role="group" aria-label="Time of day"><button id="t-night" type="button" aria-pressed="true">Night</button><button id="t-day" type="button" aria-pressed="false">Day</button></div>
+  <div class="seg" role="group" aria-label="Piece orientation"><button id="m-up" type="button" aria-pressed="true">Upright</button><button id="m-turn" type="button" aria-pressed="false">Turned</button></div>
+  <div class="seg" role="group" aria-label="Pieces" id="sizes"></div>
+  <button class="btn hold" id="peek" type="button" aria-label="Hold to look at the box">Peek</button>
+  <button class="btn" id="spread" type="button">Spread</button>
+</div>
+<div class="stage" id="stage"><canvas id="table" aria-label="Jigsaw table. Drag pieces into the frame."></canvas></div>
+<footer><a href="https://steffenhuck.github.io" target="_blank" rel="noopener">steffen huck</a></footer>
+
+<script>
+const W = 1000, H = 750;
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+const MOODS = [
+  { name: 'dusk', sky: ['#1b1d4a', '#5a2a6b', '#d0566a', '#f6a55a'], haze: '#f0956a', b: ['#4a2f5e', '#2c1f44', '#160f26'], win: ['#ffd27a', '#ffb35c', '#fff1c4'], stars: 40, cloud: '#ff9e7a' },
+  { name: 'blue hour', sky: ['#0b1640', '#1c3a78', '#3f74a8', '#9cc3d6'], haze: '#7fa8c4', b: ['#2a3f68', '#18284a', '#0c1730'], win: ['#ffd98a', '#fff3d0', '#9fe3ff'], stars: 30, cloud: '#b8d4e6' },
+  { name: 'deep night', sky: ['#03050c', '#0a1126', '#14213f', '#2a3557'], haze: '#33405e', b: ['#1a2238', '#0f1526', '#070a14'], win: ['#ffcf6b', '#ffe9a8', '#ff9f4a'], stars: 260, cloud: '#3a4666' },
+  { name: 'violet', sky: ['#140a2e', '#3b1460', '#8a2a7a', '#ff7a8a'], haze: '#d2607e', b: ['#3a1c4f', '#24123a', '#120822'], win: ['#ffe08a', '#ff8fd0', '#8ff0ff'], stars: 90, cloud: '#ff8fa8' },
+  { name: 'winter gold', sky: ['#1a2333', '#3a4a5e', '#8a8f8c', '#e8c98a'], haze: '#c8b48a', b: ['#4a5260', '#2b313d', '#171b24'], win: ['#ffe6a0', '#fff8e0'], stars: 0, cloud: '#d8c8a8' },
+  { name: 'harbour teal', sky: ['#02121a', '#06303d', '#0f5a63', '#3fa39a'], haze: '#2f8b85', b: ['#123840', '#0a242b', '#041318'], win: ['#ff5e7a', '#ffd36b', '#7dfcff'], stars: 120, cloud: '#5fb3a8' },
+  { name: 'smog amber', sky: ['#120c08', '#3a2414', '#7a4a22', '#c98a3e'], haze: '#a8763c', b: ['#3e2a1c', '#261810', '#130b06'], win: ['#ffd27a', '#ffefc0', '#ff7a3c'], stars: 0, cloud: '#c08848' }
+];
+
+function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${n >> 8 & 255},${n & 255},${a})`; }
+function shade(hex, f) { const n = parseInt(hex.slice(1), 16); const c = [n >> 16, n >> 8 & 255, n & 255].map(v => Math.max(0, Math.min(255, Math.round(v * f)))); return '#' + c.map(v => v.toString(16).padStart(2, '0')).join(''); }
+
+const DAY = [
+  { name: 'late afternoon', sky: ['#4f86c4', '#80aedb', '#c7dcea', '#f1dfbe'], haze: '#e6d6bd', water: '#3f6d8f', ground: '#6b6a68' },
+  { name: 'clear noon', sky: ['#2a69bd', '#4b8bd4', '#8bbbe7', '#d4e7f2'], haze: '#c9dcea', water: '#2f6390', ground: '#666a70' },
+  { name: 'crisp morning', sky: ['#3a7ac8', '#6aa0db', '#a8cdeb', '#eaf2f4'], haze: '#dbe8ef', water: '#386f98', ground: '#6a6e74' },
+  { name: 'hazy summer', sky: ['#7199c9', '#9fbcdb', '#d0dce6', '#eee5d6'], haze: '#e4ddd0', water: '#5a7f98', ground: '#77746e' },
+  { name: 'overcast', sky: ['#868f99', '#9fa8b1', '#bac0c4', '#d4d5d0'], haze: '#c9cbc7', water: '#5f6d78', ground: '#6a6c6c' },
+  { name: 'sea breeze', sky: ['#3784b8', '#5ea4ce', '#9fcde2', '#dfeeee'], haze: '#d2e6e8', water: '#2c7896', ground: '#677072' },
+  { name: 'dusty heat', sky: ['#8aa2bc', '#aebcc6', '#d6d0c0', '#ebdbba'], haze: '#e2d4b6', water: '#6a7f86', ground: '#7a7266' }
+];
+const FACADES = ['#b8a58f', '#9c8a78', '#c9c0b2', '#8d97a3', '#a86f5a', '#7d8b99', '#d3c9b6', '#6f8fa8', '#b5786a', '#e0d8c8'];
+function toRgb(hex) { const n = parseInt(hex.slice(1), 16); return [n >> 16, n >> 8 & 255, n & 255]; }
+function mixHex(a, b, t) { const x = toRgb(a), y = toRgb(b); return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join(''); }
+
+function paint(canvas, seed, day) {
+  const r = mulberry32(seed * 2654435761 >>> 0);
+  const rd = mulberry32((seed * 40503 + 77) >>> 0); // day-only extras, never shifts the shared geometry
+  const pick = a => a[Math.floor(r() * a.length)];
+  const rr = (a, b) => a + (b - a) * r();
+  const rdr = (a, b) => a + (b - a) * rd();
+  const ctx = canvas.getContext('2d');
+  const s = canvas.width / W;
+  ctx.setTransform(s, 0, 0, s, 0, 0);
+  const mi = Math.floor(r() * MOODS.length);
+  const m = MOODS[mi], D = DAY[mi];
+  const tags = [day ? D.name : m.name];
+
+  const river = r() < 0.58;
+  const base = river ? rr(500, 560) : rr(610, 650);
+
+  // sky
+  const g = ctx.createLinearGradient(0, 0, 0, base);
+  const stops = [0, rr(.35, .5), rr(.72, .85), 1];
+  (day ? D.sky : m.sky).forEach((c, i) => g.addColorStop(stops[i], c));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  // stars (geometry drawn from the shared stream even by day, so the city stays the same)
+  const nStars = Math.round(m.stars * rr(.6, 1.3));
+  for (let i = 0; i < nStars; i++) {
+    const y = Math.pow(r(), 1.6) * base * .75, x = r() * W;
+    const a = rr(.25, .95) * (1 - y / base);
+    const z = rr(.6, 2);
+    if (!day) { ctx.fillStyle = `rgba(255,248,230,${a})`; ctx.fillRect(x, y, z, z); }
+  }
+
+  // moon by night, sun by day
+  let sunX = 250 + rd() * 500, sunY = 80 + rd() * 100;
+  if (r() < .6) {
+    const mx = rr(90, 910), my = rr(70, 230), mr = rr(20, 42);
+    const full = r() < .45;
+    const cOff = full ? 0 : mr * rr(.45, .8) * (r() < .5 ? -1 : 1);
+    if (day) { sunX = mx; sunY = my; }
+    else {
+      const glow = ctx.createRadialGradient(mx, my, mr * .8, mx, my, mr * 5);
+      glow.addColorStop(0, 'rgba(255,244,214,.28)'); glow.addColorStop(1, 'rgba(255,244,214,0)');
+      ctx.fillStyle = glow; ctx.fillRect(mx - mr * 5, my - mr * 5, mr * 10, mr * 10);
+      const off = document.createElement('canvas'); off.width = off.height = Math.ceil(mr * 2.4 * s) + 2;
+      const o = off.getContext('2d'); o.scale(s, s);
+      o.fillStyle = '#fbf3dc'; o.beginPath(); o.arc(mr * 1.2, mr * 1.2, mr, 0, 7); o.fill();
+      if (!full) { o.globalCompositeOperation = 'destination-out'; o.beginPath(); o.arc(mr * 1.2 + cOff, mr * 1.2 - mr * .2, mr * .95, 0, 7); o.fill(); }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(off, (mx - mr * 1.2) * s, (my - mr * 1.2) * s);
+      ctx.setTransform(s, 0, 0, s, 0, 0);
+      tags.push(full ? 'full moon' : 'crescent');
+    }
+  }
+  if (day && mi !== 4) {
+    const sg = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 260);
+    sg.addColorStop(0, 'rgba(255,252,236,.75)'); sg.addColorStop(.12, 'rgba(255,248,224,.35)'); sg.addColorStop(1, 'rgba(255,248,224,0)');
+    ctx.fillStyle = sg; ctx.fillRect(sunX - 260, sunY - 260, 520, 520);
+  }
+
+  // clouds
+  if (r() < .55) {
+    const n = 3 + Math.floor(r() * 5);
+    for (let i = 0; i < n; i++) {
+      const cy = rr(base * .3, base * .85), cx = rr(-100, W + 100), cw = rr(160, 480), ch = rr(6, 18);
+      const a = rr(.1, .28);
+      ctx.fillStyle = day ? `rgba(255,255,255,${a * 1.8})` : hexA(m.cloud, a);
+      ctx.beginPath(); ctx.ellipse(cx, cy, cw, ch, 0, 0, 7); ctx.fill();
+    }
+  }
+  if (day && (mi === 0 || mi === 2 || mi === 5 || rd() < .5)) {
+    // daytime cumulus, from the day-only stream
+    const n = 2 + Math.floor(rd() * 5);
+    for (let i = 0; i < n; i++) {
+      const cx = rdr(-50, W + 50), cy = rdr(60, base * .55), cw = rdr(80, 220);
+      const puffs = 5 + Math.floor(rd() * 6);
+      for (let k = 0; k < puffs; k++) {
+        const px = cx + rdr(-cw / 2, cw / 2), py = cy + rdr(-14, 10), pr = rdr(cw * .12, cw * .28);
+        ctx.fillStyle = mi === 4 ? 'rgba(236,238,238,.55)' : 'rgba(255,255,255,.82)';
+        ctx.beginPath(); ctx.arc(px, py, pr, 0, 7); ctx.fill();
+      }
+      ctx.fillStyle = mi === 4 ? 'rgba(150,158,165,.18)' : 'rgba(160,185,210,.22)';
+      ctx.beginPath(); ctx.ellipse(cx, cy + cw * .14, cw * .6, cw * .08, 0, 0, 7); ctx.fill();
+    }
+  }
+
+  // skyline layers
+  const layers = [
+    { h: [140, 340], w: [28, 64], win: [3, 5], lit: .8, alpha: .55, aerial: .62 },
+    { h: [90, 280], w: [40, 90], win: [5, 8], lit: 1, alpha: .85, aerial: .3 },
+    { h: [40, 200], w: [55, 125], win: [7, 11], lit: 1, alpha: 1, aerial: .04 }
+  ];
+  const sunLeft = sunX < 500;
+  const tall = [];
+  layers.forEach((L, li) => {
+    let x = rr(-40, 0);
+    const landmarkAt = li === 1 && r() < .7 ? rr(150, 850) : -1;
+    while (x < W + 20) {
+      const bw = rr(L.w[0], L.w[1]);
+      let bh = rr(L.h[0], L.h[1]) * (li === 2 && river ? .8 : 1);
+      const isLandmark = landmarkAt >= 0 && x < landmarkAt && x + bw > landmarkAt;
+      if (isLandmark) bh = rr(380, 470);
+      const top = base - bh;
+      const nightCol = shade(m.b[li], rr(.85, 1.15));
+      const fac = mixHex(FACADES[Math.floor(rd() * FACADES.length)], D.haze, L.aerial);
+      const col = day ? shade(fac, .88 + rd() * .2) : nightCol;
+      ctx.fillStyle = col;
+      ctx.fillRect(x, top, bw + .6, bh + 2);
+      // roofs
+      const roof = isLandmark ? 'spire' : pick(['flat', 'flat', 'flat', 'step', 'antenna', 'slant', 'dome', li === 2 ? 'tank' : 'step']);
+      ctx.beginPath();
+      if (roof === 'step') { const sw = bw * rr(.4, .7), sh = rr(12, 40); ctx.rect(x + (bw - sw) / 2, top - sh, sw, sh + 1); if (r() < .5) ctx.rect(x + bw / 2 - sw / 4, top - sh - sh * .6, sw / 2, sh * .6 + 1); }
+      else if (roof === 'spire') { const sw = bw * .5; ctx.rect(x + bw / 2 - sw / 2, top - 40, sw, 41); ctx.moveTo(x + bw / 2 - sw / 2, top - 40); ctx.lineTo(x + bw / 2, top - 120); ctx.lineTo(x + bw / 2 + sw / 2, top - 40); }
+      else if (roof === 'slant') { const dir = r() < .5; ctx.moveTo(x, top + 1); ctx.lineTo(x + bw, top + 1); ctx.lineTo(dir ? x + bw : x, top - bw * .35); ctx.closePath(); }
+      else if (roof === 'dome') { ctx.arc(x + bw / 2, top + 1, bw * .32, Math.PI, 0); }
+      else if (roof === 'tank') { const tx = x + rr(.2, .6) * bw; ctx.rect(tx, top - 26, 18, 16); ctx.rect(tx + 2, top - 10, 2, 10); ctx.rect(tx + 14, top - 10, 2, 10); ctx.moveTo(tx - 2, top - 26); ctx.lineTo(tx + 9, top - 33); ctx.lineTo(tx + 20, top - 26); }
+      if (day && (roof === 'dome' || roof === 'slant')) ctx.fillStyle = shade(col, .82);
+      ctx.fill();
+      ctx.fillStyle = col;
+      let antTop = top;
+      if (roof === 'antenna') { ctx.fillStyle = day ? shade(col, .6) : col; ctx.fillRect(x + bw / 2 - 1, top - 50, 2, 50); antTop = top - 50; }
+      if (roof === 'spire') antTop = top - 120;
+      if (li > 0 && bh > 200) tall.push([x + bw / 2, antTop]);
+      // by day: a shadow side away from the sun, and a sunlit edge
+      if (day && mi !== 4) {
+        const sw = bw * .32;
+        ctx.fillStyle = `rgba(30,40,60,${.22 - li * .03 + (li === 0 ? -.1 : 0)})`;
+        ctx.fillRect(sunLeft ? x + bw - sw : x, top, sw + .6, bh + 2);
+        ctx.fillStyle = 'rgba(255,250,235,.16)';
+        ctx.fillRect(sunLeft ? x : x + bw - 3, top, 3, bh + 2);
+      }
+      // windows
+      const ww = rr(L.win[0], L.win[1]), wh = ww * rr(1, 1.5), gx = ww * rr(.5, .9), gy = wh * rr(.6, 1);
+      const cols = Math.floor((bw - 8) / (ww + gx)), rows = Math.floor((bh - 14) / (wh + gy));
+      const dark = r() < .12, glow = r() < .08;
+      const p = dark ? 0 : glow ? .92 : rr(.06, .55) * L.lit;
+      const wc = r() < .8 ? m.win[0] : pick(m.win);
+      const ox = x + (bw - cols * (ww + gx) + gx) / 2;
+      const glassy = day && rd() < .3;
+      for (let row = 0; row < rows; row++) {
+        const rf = r() < .2 ? 2.2 : r() < .3 ? .2 : 1;
+        for (let c = 0; c < cols; c++) {
+          const wx = ox + c * (ww + gx), wy = top + 10 + row * (wh + gy);
+          if (r() < p * rf) {
+            const wcol = r() < .9 ? wc : pick(m.win), a = L.alpha * rr(.65, 1);
+            if (!day) { ctx.fillStyle = hexA(wcol, a); ctx.fillRect(wx, wy, ww, wh); }
+            else { ctx.fillStyle = hexA(mixHex(D.sky[2], '#ffffff', .35), .55 * L.alpha); ctx.fillRect(wx, wy, ww, wh); }
+          } else if (day) {
+            ctx.fillStyle = glassy ? hexA(D.sky[1], .45 * L.alpha) : `rgba(28,36,48,${.42 * L.alpha})`;
+            ctx.fillRect(wx, wy, ww, wh);
+          }
+        }
+      }
+      x += bw + (li === 0 ? rr(-6, 4) : rr(-4, 10));
+    }
+    // haze between layers
+    const hc = day ? D.haze : m.haze;
+    const hz = ctx.createLinearGradient(0, base - (li === 0 ? 260 : 160), 0, base);
+    hz.addColorStop(0, hexA(hc, 0)); hz.addColorStop(1, hexA(hc, (li === 0 ? .32 : li === 1 ? .16 : .05) * (day ? 1.3 : 1)));
+    ctx.fillStyle = hz; ctx.fillRect(0, base - 260, W, 260);
+  });
+  // aviation lights (night only)
+  if (!day) tall.sort((a, b) => a[1] - b[1]).slice(0, 4).forEach(([x, y]) => {
+    const gl = ctx.createRadialGradient(x, y, 0, x, y, 10);
+    gl.addColorStop(0, 'rgba(255,70,60,.9)'); gl.addColorStop(1, 'rgba(255,70,60,0)');
+    ctx.fillStyle = gl; ctx.fillRect(x - 10, y - 10, 20, 20);
+  });
+
+  const nearTone = day ? mixHex(D.ground, '#000000', .15) : m.b[2];
+  if (river) {
+    tags.push('river');
+    ctx.fillStyle = day ? mixHex(D.ground, '#c8bca6', .4) : shade(m.b[2], .7); ctx.fillRect(0, base, W, 8);
+    const px = v => v * s;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const wt = base + 8, depth = H - wt;
+    const ph = r() * 10;
+    for (let y = 0; y < depth; y += 3) {
+      const t = y / depth;
+      const amp = 2 + 16 * t;
+      const dx = Math.sin(y * .35 + ph) * amp * .6 + (r() - .5) * amp * .8;
+      const sy = base - y * 1.05 - 3;
+      if (sy < 0) break;
+      ctx.globalAlpha = (day ? .5 : .62) - .3 * t;
+      ctx.drawImage(canvas, 0, px(sy), canvas.width, px(3), px(dx), px(wt + y), canvas.width, px(3));
+    }
+    ctx.globalAlpha = 1;
+    ctx.setTransform(s, 0, 0, s, 0, 0);
+    const wg = ctx.createLinearGradient(0, wt, 0, H);
+    if (day) { wg.addColorStop(0, hexA(D.water, .3)); wg.addColorStop(1, hexA(D.water, .7)); }
+    else { wg.addColorStop(0, hexA(m.b[2], .35)); wg.addColorStop(1, hexA(m.b[2], .78)); }
+    ctx.fillStyle = wg; ctx.fillRect(0, wt, W, depth);
+    for (let i = 0; i < 70; i++) {
+      const a = rr(.06, .2), hx = rr(0, W), hy = rr(wt, H), hw = rr(10, 60);
+      ctx.fillStyle = day ? `rgba(255,255,255,${a * 1.4})` : hexA(m.haze, a);
+      ctx.fillRect(hx, hy, hw, 1.2);
+    }
+    const gap = rr(40, 80);
+    for (let x = rr(0, gap); x < W; x += gap) {
+      const refl = rr(20, 60);
+      if (day) { ctx.fillStyle = 'rgba(40,44,50,.7)'; ctx.fillRect(x - .8, base - 14, 1.6, 14); continue; }
+      const gl = ctx.createRadialGradient(x, base - 2, 0, x, base - 2, 9);
+      gl.addColorStop(0, hexA(m.win[0], .95)); gl.addColorStop(1, hexA(m.win[0], 0));
+      ctx.fillStyle = gl; ctx.fillRect(x - 9, base - 11, 18, 18);
+      ctx.fillStyle = hexA(m.win[0], .25); ctx.fillRect(x - 1, wt + 2, 2, refl);
+    }
+    if (r() < .5) {
+      tags.push('bridge');
+      const by = wt + rr(30, 60), dk = day ? mixHex('#8a8478', D.haze, .15) : shade(m.b[2], .55);
+      ctx.fillStyle = dk;
+      ctx.fillRect(0, by, W, 10);
+      const span = rr(150, 240), archH = rr(40, 70);
+      ctx.beginPath();
+      for (let x = rr(-span, 0); x < W + span; x += span) {
+        ctx.moveTo(x, by + 9); ctx.lineTo(x + span, by + 9); ctx.lineTo(x + span, by + archH);
+        ctx.quadraticCurveTo(x + span / 2, by - archH + 22, x, by + archH); ctx.closePath();
+        ctx.rect(x - 8, by + archH - 4, 16, H - by);
+      }
+      ctx.fill();
+      if (day) { ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.fillRect(0, by, W, 2); }
+      else for (let x = 10; x < W; x += 34) { ctx.fillStyle = hexA(m.win[0], .9); ctx.fillRect(x, by - 3, 3, 3); }
+    }
+  } else {
+    tags.push('street');
+    ctx.fillStyle = day ? D.ground : shade(m.b[2], .6); ctx.fillRect(0, base, W, H - base);
+    const sg = ctx.createLinearGradient(0, base, 0, H);
+    sg.addColorStop(0, hexA(day ? D.haze : m.haze, .18)); sg.addColorStop(1, hexA(day ? D.haze : m.haze, 0));
+    ctx.fillStyle = sg; ctx.fillRect(0, base, W, H - base);
+    const gap = rr(90, 140);
+    for (let x = rr(20, gap); x < W; x += gap) {
+      ctx.fillStyle = day ? 'rgba(45,48,54,.85)' : shade(m.b[2], .5); ctx.fillRect(x - 1.5, base - 70, 3, 70 + 30);
+      if (day) { ctx.fillRect(x - 1.5, base - 72, 14, 3); continue; }
+      const gl = ctx.createRadialGradient(x, base - 72, 0, x, base - 72, 40);
+      gl.addColorStop(0, hexA(m.win[0], .55)); gl.addColorStop(1, hexA(m.win[0], 0));
+      ctx.fillStyle = gl; ctx.fillRect(x - 40, base - 112, 80, 80);
+      ctx.fillStyle = hexA(m.win[0], .07);
+      ctx.beginPath(); ctx.moveTo(x - 3, base - 70); ctx.lineTo(x + 3, base - 70); ctx.lineTo(x + 20, base + 26); ctx.lineTo(x - 20, base + 26); ctx.fill();
+    }
+    if (r() < .6) {
+      tags.push('train');
+      const vy = base - rr(110, 160), dk = day ? mixHex('#6e6a64', D.haze, .1) : shade(m.b[2], .5);
+      ctx.fillStyle = dk; ctx.fillRect(0, vy, W, 14);
+      for (let x = rr(0, 90); x < W; x += 90) ctx.fillRect(x, vy, 12, base - vy + 1);
+      const tx = rr(-200, W - 400), cars = 3 + Math.floor(r() * 4);
+      const livery = ['#c0392b', '#d9a441', '#2f6f8f', '#e8e4da', '#3f7a4f'][Math.floor(rd() * 5)];
+      for (let c = 0; c < cars; c++) {
+        const cx = tx + c * 104;
+        ctx.fillStyle = day ? livery : shade(m.b[1], 1.1); ctx.fillRect(cx, vy - 30, 100, 30);
+        for (let w = 0; w < 8; w++) { ctx.fillStyle = day ? 'rgba(30,38,50,.75)' : hexA(m.win[1] || m.win[0], .95); ctx.fillRect(cx + 6 + w * 11.5, vy - 24, 8, 11); }
+      }
+    }
+    ctx.fillStyle = day ? mixHex(D.ground, '#000000', .35) : shade(m.b[2], .4); ctx.fillRect(0, H - 22, W, 22);
+  }
+
+  if (r() < .2) {
+    tags.push(day ? 'mist' : 'fog');
+    const hc = day ? '#f4f4f0' : m.haze;
+    const fg = ctx.createLinearGradient(0, base - 220, 0, base + 40);
+    fg.addColorStop(0, hexA(hc, 0)); fg.addColorStop(.7, hexA(hc, day ? .4 : .3)); fg.addColorStop(1, hexA(hc, 0));
+    ctx.fillStyle = fg; ctx.fillRect(0, base - 220, W, 260);
+  }
+  if (r() < .18) {
+    tags.push('rain');
+    if (day) { ctx.fillStyle = 'rgba(120,128,138,.22)'; ctx.fillRect(0, 0, W, H); }
+    ctx.strokeStyle = day ? 'rgba(240,244,250,.28)' : 'rgba(220,230,255,.13)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < 420; i++) { const x = rr(-60, W), y = rr(0, H), l = rr(14, 30); ctx.moveTo(x, y); ctx.lineTo(x + l * .25, y + l); }
+    ctx.stroke();
+  }
+  return tags;
+}
+
+
+
+// ---------- jigsaw ----------
+const SIZES_UP = { 12: [4, 3], 24: [6, 4], 48: [8, 6], 96: [12, 8] };
+const SIZES_TURN = { 12: [4, 3], 48: [8, 6], 108: [12, 9] }; // square pieces, so quarter turns look natural
+const dprG = Math.min(window.devicePixelRatio || 1, 2);
+const cvs = document.getElementById('table');
+const ctx = cvs.getContext('2d');
+const hit = document.createElement('canvas').getContext('2d');
+
+const G = {
+  seed: 0, today: true, day: false, turned: false, n: 24, didTurn: false,
+  cols: 6, rows: 4, pw: 0, ph: 0, m: 0,
+  pieces: [], groups: new Map(), order: [], nextId: 1,
+  L: null, img: null, alt: null,
+  started: 0, elapsed: 0, peeks: 0, peeking: false, done: false,
+  drag: null, reveal: null, audio: null
+};
+const sizesFor = () => G.turned ? SIZES_TURN : SIZES_UP;
+
+function todaySeed() {
+  const d = new Date();
+  const k = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+  return 1000 + (Math.imul(k, 2654435761) >>> 0) % 9000;
+}
+
+// quarter turns, clockwise on screen
+function rotV(k, x, y) { switch (k & 3) { case 0: return [x, y]; case 1: return [-y, x]; case 2: return [-x, -y]; default: return [y, -x]; } }
+
+// One tab profile along a unit edge, as cubic segments [c1u,c1v, c2u,c2v, pu,pv].
+function profile(q) {
+  const u0 = .5 + q.shift, n = q.n, h = q.h, k = q.k, l = q.lean, sh = .12 * n;
+  return [
+    [0, 0, u0 - sh, 0, u0 - sh, 0],
+    [u0 - .07 * n, 0, u0 - .06 * n, .08 * k, u0 - .10 * n, .16 * k],
+    [u0 - .22 * h + l, .22 * k, u0 - .14 * h + l, .36 * k, u0 + l, .36 * k],
+    [u0 + .14 * h + l, .36 * k, u0 + .22 * h + l, .22 * k, u0 + .10 * n, .16 * k],
+    [u0 + .06 * n, .08 * k, u0 + .07 * n, 0, u0 + sh, 0],
+    [u0 + sh, 0, 1, 0, 1, 0]
+  ];
+}
+function edgeGeom(A, B, q) {
+  const L = Math.hypot(B[0] - A[0], B[1] - A[1]), tx = (B[0] - A[0]) / L, ty = (B[1] - A[1]) / L;
+  const px = -ty, py = tx;
+  const P = (u, v) => [A[0] + tx * u * L + px * v * L * q.s, A[1] + ty * u * L + py * v * L * q.s];
+  return { start: A.slice(), segs: profile(q).map(z => [...P(z[0], z[1]), ...P(z[2], z[3]), ...P(z[4], z[5])]) };
+}
+function straight(A, B) { return { start: A.slice(), segs: [[A[0], A[1], B[0], B[1], B[0], B[1]]] }; }
+function reverse(e) {
+  const segs = [], n = e.segs.length;
+  for (let i = n - 1; i >= 0; i--) {
+    const sg = e.segs[i], prev = i > 0 ? e.segs[i - 1].slice(4, 6) : e.start;
+    segs.push([sg[2], sg[3], sg[0], sg[1], prev[0], prev[1]]);
+  }
+  return { start: e.segs[n - 1].slice(4, 6), segs };
+}
+// round the frame corner K where straight edge `inE` ends and straight edge `outE` begins
+function roundCorner(inE, outE, rad) {
+  const A = inE.start, K = inE.segs[0].slice(4, 6), B = outE.segs[0].slice(4, 6);
+  const ui = [(K[0] - A[0]) / Math.hypot(K[0] - A[0], K[1] - A[1]), (K[1] - A[1]) / Math.hypot(K[0] - A[0], K[1] - A[1])];
+  const uo = [(B[0] - K[0]) / Math.hypot(B[0] - K[0], B[1] - K[1]), (B[1] - K[1]) / Math.hypot(B[0] - K[0], B[1] - K[1])];
+  const Ki = [K[0] - ui[0] * rad, K[1] - ui[1] * rad], Ko = [K[0] + uo[0] * rad, K[1] + uo[1] * rad], c = .448;
+  inE.segs = [[A[0], A[1], Ki[0], Ki[1], Ki[0], Ki[1]], [Ki[0] + ui[0] * rad * (1 - c), Ki[1] + ui[1] * rad * (1 - c), Ko[0] - uo[0] * rad * (1 - c), Ko[1] - uo[1] * rad * (1 - c), Ko[0], Ko[1]]];
+  outE.start = Ko.slice();
+  outE.segs = [[Ko[0], Ko[1], B[0], B[1], B[0], B[1]]];
+}
+
+function buildPuzzle() {
+  const [C, R] = sizesFor()[G.n];
+  G.cols = C; G.rows = R; G.pw = 1000 / C; G.ph = 750 / R; G.m = .62 * Math.max(G.pw, G.ph);
+  const rnd = mulberry32((G.seed * 977 + G.n) >>> 0);
+  const rr = (a, b) => a + (b - a) * rnd();
+  const tab = () => ({ s: rnd() < .5 ? 1 : -1, shift: rr(-.08, .08), n: rr(.78, 1.25), h: rr(.85, 1.28), k: rr(.82, 1.16), lean: rr(-.05, .05) });
+  const V = [];
+  for (let r = 0; r <= R; r++) { V[r] = []; for (let c = 0; c <= C; c++) {
+    const jx = (c > 0 && c < C) ? rr(-.08, .08) * G.pw : 0, jy = (r > 0 && r < R) ? rr(-.08, .08) * G.ph : 0;
+    V[r][c] = [c * G.pw + jx, r * G.ph + jy];
+  } }
+  const H = [], Ve = [];
+  for (let r = 1; r < R; r++) { H[r] = []; for (let c = 0; c < C; c++) H[r][c] = edgeGeom(V[r][c], V[r][c + 1], tab()); }
+  for (let c = 1; c < C; c++) { Ve[c] = []; for (let r = 0; r < R; r++) Ve[c][r] = edgeGeom(V[r][c], V[r + 1][c], tab()); }
+  const rad = .24 * Math.min(G.pw, G.ph);
+  G.pieces = []; G.groups = new Map(); G.order = []; G.nextId = 1;
+  for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+    const edges = [
+      r === 0 ? straight(V[0][c], V[0][c + 1]) : H[r][c],
+      c === C - 1 ? straight(V[r][C], V[r + 1][C]) : Ve[c + 1][r],
+      r === R - 1 ? straight(V[R][c + 1], V[R][c]) : reverse(H[r + 1][c]),
+      c === 0 ? straight(V[r + 1][0], V[r][0]) : reverse(Ve[c][r])
+    ];
+    if (r === 0 && c === 0) roundCorner(edges[3], edges[0], rad);
+    if (r === 0 && c === C - 1) roundCorner(edges[0], edges[1], rad);
+    if (r === R - 1 && c === C - 1) roundCorner(edges[1], edges[2], rad);
+    if (r === R - 1 && c === 0) roundCorner(edges[2], edges[3], rad);
+    const id = G.nextId++;
+    const p = { i: r * C + c, r, c, hx: c * G.pw, hy: r * G.ph, edges, g: id, sprite: null, path: null };
+    G.pieces.push(p);
+    G.groups.set(id, { id, ox: 0, oy: 0, rot: 0, pieces: [p], locked: false, slotted: false, anim: null });
+    G.order.push(id);
+  }
+}
+
+// ---------- layout & rendering ----------
+function layout() {
+  const st = document.getElementById('stage').getBoundingClientRect();
+  const cw = Math.max(280, st.width), ch = Math.max(340, st.height);
+  cvs.width = Math.round(cw * dprG); cvs.height = Math.round(ch * dprG);
+  let fw, fh, fx, fy, table;
+  if (cw > ch * 1.25) {
+    fh = Math.min(ch - 20, cw * .58 * .75); fw = fh / .75; fx = 10; fy = (ch - fh) / 2;
+    table = { x: fx + fw + 16, y: 8, w: cw - fx - fw - 24, h: ch - 16 };
+  } else {
+    fw = cw - 16; fh = fw * .75;
+    if (fh > ch * .5) { fh = ch * .5; fw = fh / .75; }
+    fx = (cw - fw) / 2; fy = 8;
+    table = { x: 6, y: fy + fh + 14, w: cw - 12, h: ch - fy - fh - 20 };
+  }
+  G.L = { cw, ch, fx, fy, fw, fh, sc: fw / 1000, table };
+  renderImages();
+  buildSprites();
+}
+
+function renderImages() {
+  const make = day => { const c = document.createElement('canvas'); c.width = Math.round(G.L.fw * dprG); c.height = Math.round(G.L.fh * dprG); paint(c, G.seed, day); return c; };
+  G.img = make(G.day);
+  G.alt = null;
+  G.makeAlt = () => G.alt || (G.alt = make(!G.day));
+}
+
+function tracePath(path, p, ox, oy, sc) {
+  const T = (x, y) => [(x - ox) * sc, (y - oy) * sc];
+  const st = T(...p.edges[0].start); path.moveTo(st[0], st[1]);
+  for (const e of p.edges) for (const s of e.segs) { const a = T(s[0], s[1]), b = T(s[2], s[3]), q = T(s[4], s[5]); path.bezierCurveTo(a[0], a[1], b[0], b[1], q[0], q[1]); }
+  path.closePath();
+}
+
+function buildSprites() {
+  const { sc } = G.L, m = G.m;
+  const sw = (G.pw + 2 * m) * sc, sh = (G.ph + 2 * m) * sc;
+  for (const p of G.pieces) {
+    const path = new Path2D();
+    tracePath(path, p, p.hx - m, p.hy - m, sc);
+    p.path = path;
+    const c = document.createElement('canvas');
+    c.width = Math.ceil(sw * dprG); c.height = Math.ceil(sh * dprG);
+    const x = c.getContext('2d');
+    x.scale(dprG, dprG);
+    x.save(); x.clip(path);
+    x.drawImage(G.img, -(p.hx - m) * sc, -(p.hy - m) * sc, G.L.fw, G.L.fh);
+    x.restore();
+    x.lineWidth = .9; x.strokeStyle = 'rgba(0,0,0,.45)'; x.stroke(path);
+    x.save(); x.translate(.7, .7); x.lineWidth = .6; x.strokeStyle = 'rgba(255,255,255,.16)'; x.stroke(path); x.restore();
+    p.sprite = c;
+  }
+  G.sw = sw; G.sh = sh;
+}
+
+// ---------- group geometry (all in picture units; the frame is 1000 × 750) ----------
+const ease = x => x * x * (3 - 2 * x);
+function homeCentre(p) { return [p.hx + G.pw / 2, p.hy + G.ph / 2]; }
+function centreAt(g, p, rot, ox, oy) { const [x, y] = rotV(rot, ...homeCentre(p)); return [x + ox, y + oy]; }
+function centre(g, p) { return centreAt(g, p, g.rot, g.ox, g.oy); }
+function pivot(g) { let x = 0, y = 0; for (const p of g.pieces) { const c = centre(g, p); x += c[0]; y += c[1]; } return [x / g.pieces.length, y / g.pieces.length]; }
+// what is on screen right now, including a running slide or turn
+function shownPose(g, p) {
+  let [x, y] = centre(g, p), ang = g.rot * Math.PI / 2;
+  const a = g.anim;
+  if (a) {
+    const t = Math.min(1, (performance.now() - a.t0) / a.d);
+    if (t >= 1) g.anim = null;
+    else {
+      const k = 1 - ease(t);
+      if (a.kind === 'move') { x += (a.fx - g.ox) * k; y += (a.fy - g.oy) * k; }
+      else { const th = -k * Math.PI / 2, dx = x - a.px, dy = y - a.py; x = a.px + dx * Math.cos(th) - dy * Math.sin(th); y = a.py + dx * Math.sin(th) + dy * Math.cos(th); ang += th; }
+    }
+  }
+  const { fx, fy, sc } = G.L;
+  return [fx + x * sc, fy + y * sc, ang];
+}
+function moveTo(g, ox, oy, d) {
+  g.anim = { kind: 'move', fx: g.ox, fy: g.oy, t0: performance.now(), d: d || 260 };
+  g.ox = ox; g.oy = oy;
+}
+function rect(g) {
+  let a = 1e9, b = 1e9, c = -1e9, d = -1e9; const half = Math.max(G.pw, G.ph) / 2;
+  for (const p of g.pieces) { const [x, y] = centre(g, p); a = Math.min(a, x - half); b = Math.min(b, y - half); c = Math.max(c, x + half); d = Math.max(d, y + half); }
+  return { x0: a, y0: b, x1: c, y1: d };
+}
+function cellsAt(g, rot, ox, oy) { return g.pieces.map(p => { const [x, y] = centreAt(g, p, rot, ox, oy); return [Math.round((y - G.ph / 2) / G.ph), Math.round((x - G.pw / 2) / G.pw)]; }); }
+function occupant(r, c, except) {
+  for (const g of G.groups.values()) {
+    if (g === except || !(g.locked || g.slotted)) continue;
+    if (cellsAt(g, g.rot, g.ox, g.oy).some(([rr, cc]) => rr === r && cc === c)) return g;
+  }
+  return null;
+}
+
+let raf = 0;
+function draw() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); }
+
+function render() {
+  const { cw, ch, fx, fy, fw, fh, table } = G.L;
+  ctx.setTransform(dprG, 0, 0, dprG, 0, 0);
+  ctx.fillStyle = '#1d2f2b'; ctx.fillRect(0, 0, cw, ch);
+  const vg = ctx.createRadialGradient(cw / 2, ch / 2, Math.min(cw, ch) * .2, cw / 2, ch / 2, Math.max(cw, ch) * .75);
+  vg.addColorStop(0, 'rgba(255,255,255,.04)'); vg.addColorStop(1, 'rgba(0,0,0,.35)');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, cw, ch);
+  ctx.fillStyle = '#0d1413'; ctx.fillRect(fx, fy, fw, fh);
+  ctx.strokeStyle = 'rgba(235,230,216,.22)'; ctx.lineWidth = 1; ctx.strokeRect(fx - .5, fy - .5, fw + 1, fh + 1);
+  if (G.turned && !G.didTurn && !G.done) {
+    ctx.fillStyle = 'rgba(235,230,216,.5)'; ctx.font = '400 14px "Atkinson Hyperlegible", sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Tap a piece to turn it. Drag to move it.', fx + fw / 2, fy + fh / 2);
+  }
+  if (G.peeking && !G.done) { ctx.globalAlpha = .4; ctx.drawImage(G.img, fx, fy, fw, fh); ctx.globalAlpha = 1; }
+  let animating = false;
+  const dragId = G.drag ? G.drag.g : -1;
+  const layers = [
+    G.order.filter(id => G.groups.get(id).locked),
+    G.order.filter(id => { const g = G.groups.get(id); return g.slotted && !g.locked && id !== dragId; }),
+    G.order.filter(id => { const g = G.groups.get(id); return !g.slotted && !g.locked && id !== dragId; }),
+    G.drag ? [dragId] : []
+  ];
+  layers.forEach((ids, li) => {
+    for (const gid of ids) {
+      const g = G.groups.get(gid); if (!g) continue;
+      if (g.anim) animating = true;
+      let lift = 0;
+      if (li === 1) { ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 3; ctx.shadowOffsetY = 1.5; lift = -1.5; }
+      else if (li === 2) { ctx.shadowColor = 'rgba(0,0,0,.45)'; ctx.shadowBlur = 5; ctx.shadowOffsetY = 2; }
+      else if (li === 3) { ctx.shadowColor = 'rgba(0,0,0,.45)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 6; lift = -2; }
+      for (const p of g.pieces) {
+        const [x, y, ang] = shownPose(g, p);
+        if (ang) { ctx.save(); ctx.translate(x, y + lift); ctx.rotate(ang); ctx.drawImage(p.sprite, -G.sw / 2, -G.sh / 2, G.sw, G.sh); ctx.restore(); }
+        else ctx.drawImage(p.sprite, x - G.sw / 2, y + lift - G.sh / 2, G.sw, G.sh);
+      }
+      ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+    }
+  });
+  if (G.reveal) {
+    const now = performance.now(), t = now - G.reveal.t0;
+    ctx.globalAlpha = Math.min(1, t / 900); ctx.drawImage(G.img, fx, fy, fw, fh);
+    const a2 = Math.max(0, Math.min(1, (t - 1500) / 3200));
+    const k = G.reveal.toAlt ? ease(a2) : 1 - ease(Math.min(1, (now - G.reveal.t1) / 1400));
+    if (G.alt && k > 0) { ctx.globalAlpha = k; ctx.drawImage(G.alt, fx, fy, fw, fh); }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(235,230,216,.92)'; ctx.font = '800 22px "Big Shoulders Display", sans-serif'; ctx.textAlign = 'center';
+    const tx = table.x + table.w / 2, ty = table.y + Math.min(table.h / 2, 90);
+    ctx.fillText(`Done in ${fmt(G.elapsed)}${G.peeks ? ` · ${G.peeks} peek${G.peeks > 1 ? 's' : ''}` : ' · no peeking'}`, tx, ty);
+    ctx.fillStyle = 'rgba(235,230,216,.6)'; ctx.font = '400 14px "Atkinson Hyperlegible", sans-serif';
+    const showing = G.reveal.toAlt ? !G.day : G.day;
+    if (t >= 1500) ctx.fillText(`Same city, by ${showing ? 'day' : 'night'}. Tap the picture to switch.`, tx, ty + 24);
+    if (t < 5000 || (G.reveal.t1 && now - G.reveal.t1 < 1500)) animating = true;
+  }
+  if (animating) draw();
+}
+
+// ---------- placement helpers ----------
+function toTop(g) { G.order = G.order.filter(id => id !== g.id); G.order.push(g.id); }
+function placeOnTable(g, tx, ty) { const [px, py] = pivot(g); return [g.ox + (tx - px), g.oy + (ty - py)]; }
+function randomTableSpot() {
+  const { table, fx, fy, sc } = G.L;
+  return [(table.x + table.w * (.12 + .76 * Math.random()) - fx) / sc, (table.y + table.h * (.15 + .7 * Math.random()) - fy) / sc];
+}
+function bump(h) { h.slotted = false; const [x, y] = placeOnTable(h, ...randomTableSpot()); moveTo(h, x, y, 420); toTop(h); }
+function lock(g) {
+  for (const p of g.pieces) { const o = occupant(p.r, p.c, g); if (o && !o.locked) bump(o); }
+  g.ox = 0; g.oy = 0; g.rot = 0; g.locked = true; g.slotted = false;
+  G.order = [g.id, ...G.order.filter(id => id !== g.id)];
+}
+
+// ---------- scatter ----------
+function scatter(fresh) {
+  const { table, fx, fy, sc } = G.L;
+  const loose = [...G.groups.values()].filter(g => !g.locked && !g.slotted);
+  const n = loose.length; if (!n) return;
+  const rnd = mulberry32((Math.random() * 1e9) | 0);
+  for (let i = n - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [loose[i], loose[j]] = [loose[j], loose[i]]; }
+  const nc = Math.max(1, Math.round(Math.sqrt(n * table.w / table.h))), nr = Math.ceil(n / nc);
+  const cw = table.w / nc, chh = table.h / nr;
+  loose.forEach((g, k) => {
+    if (fresh) g.rot = G.turned ? Math.floor(rnd() * 4) : 0;
+    const cx = table.x + (k % nc + .5 + (rnd() - .5) * .35) * cw;
+    const cy = table.y + (Math.floor(k / nc) + .5 + (rnd() - .5) * .35) * chh;
+    [g.ox, g.oy] = placeOnTable(g, (cx - fx) / sc, (cy - fy) / sc);
+    g.anim = null;
+  });
+  draw();
+}
+
+// ---------- interaction ----------
+function at(e) { const r = cvs.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+function pick(x, y) {
+  const ids = [...G.order.filter(id => G.groups.get(id).slotted), ...G.order.filter(id => !G.groups.get(id).slotted)];
+  const { fx, fy, sc } = G.L;
+  for (let k = ids.length - 1; k >= 0; k--) {
+    const g = G.groups.get(ids[k]); if (!g || g.locked) continue;
+    for (const p of g.pieces) {
+      const [cx, cy] = centre(g, p);
+      const [lx, ly] = rotV(4 - g.rot, x - (fx + cx * sc), y - (fy + cy * sc));
+      if (hit.isPointInPath(p.path, lx + G.sw / 2, ly + G.sh / 2)) return g;
+    }
+  }
+  return null;
+}
+cvs.addEventListener('pointerdown', e => {
+  ensureAudio();
+  const [x, y] = at(e);
+  if (G.done) {
+    const { fx, fy, fw, fh } = G.L;
+    if (x >= fx && x <= fx + fw && y >= fy && y <= fy + fh && G.reveal && performance.now() - G.reveal.t0 > 1600) {
+      G.makeAlt(); G.reveal.toAlt = !G.reveal.toAlt;
+      if (!G.reveal.toAlt) G.reveal.t1 = performance.now(); else G.reveal.t0 = performance.now() - 1500;
+      draw();
+    }
+    return;
+  }
+  const g = pick(x, y); if (!g) return;
+  if (!G.started) { G.started = performance.now(); tick(); }
+  g.anim = null;
+  G.drag = { g: g.id, sx: x, sy: y, ox: g.ox, oy: g.oy, slotted: g.slotted, t: performance.now(), moved: false };
+  g.slotted = false;
+  toTop(g);
+  cvs.setPointerCapture(e.pointerId); cvs.classList.add('dragging');
+  draw();
+});
+cvs.addEventListener('pointermove', e => {
+  if (!G.drag) return;
+  const [x, y] = at(e), g = G.groups.get(G.drag.g), sc = G.L.sc;
+  if (!G.drag.moved && Math.hypot(x - G.drag.sx, y - G.drag.sy) < 7) return;
+  G.drag.moved = true;
+  g.ox = G.drag.ox + (x - G.drag.sx) / sc; g.oy = G.drag.oy + (y - G.drag.sy) / sc;
+  draw();
+});
+
+// join true neighbours that are turned the same way and lie within the magnet
+function tryJoin(g, tol) {
+  let joined = false, merged = true;
+  while (merged) {
+    merged = false;
+    outer: for (const p of g.pieces) {
+      for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+        const r = p.r + dr, c = p.c + dc;
+        if (r < 0 || c < 0 || r >= G.rows || c >= G.cols) continue;
+        const q = G.pieces[r * G.cols + c]; if (q.g === g.id) continue;
+        const h = G.groups.get(q.g);
+        if (h.rot !== g.rot || Math.abs(h.ox - g.ox) >= tol || Math.abs(h.oy - g.oy) >= tol) continue;
+        if (h.slotted) {
+          const ok = cellsAt(g, h.rot, h.ox, h.oy).every(([rr, cc]) => rr >= 0 && cc >= 0 && rr < G.rows && cc < G.cols && !occupant(rr, cc, g));
+          if (!ok) continue;
+        }
+        for (const pp of g.pieces) { pp.g = h.id; h.pieces.push(pp); }
+        G.groups.delete(g.id); G.order = G.order.filter(id => id !== g.id);
+        if (!h.locked) toTop(h);
+        g = h; merged = joined = true;
+        break outer;
+      }
+    }
+  }
+  return [g, joined];
+}
+
+function pivotInFrame(g) {
+  const [x, y] = pivot(g);
+  return x >= 0 && x <= 1000 && y >= 0 && y <= 750;
+}
+
+// snap a group onto the grid of slots; returns [ox, oy] or null if it cannot fit
+function slotPose(g) {
+  const [cx, cy] = centre(g, g.pieces[0]);
+  let ox = g.ox + ((Math.floor(cx / G.pw) + .5) * G.pw - cx), oy = g.oy + ((Math.floor(cy / G.ph) + .5) * G.ph - cy);
+  let cells = cellsAt(g, g.rot, ox, oy);
+  const rs = cells.map(c => c[0]), cs = cells.map(c => c[1]);
+  const minr = Math.min(...rs), maxr = Math.max(...rs), minc = Math.min(...cs), maxc = Math.max(...cs);
+  if (maxr - minr >= G.rows || maxc - minc >= G.cols) return null;
+  if (minr < 0) oy += -minr * G.ph; if (maxr > G.rows - 1) oy -= (maxr - G.rows + 1) * G.ph;
+  if (minc < 0) ox += -minc * G.pw; if (maxc > G.cols - 1) ox -= (maxc - G.cols + 1) * G.pw;
+  return [ox, oy];
+}
+
+// decide where a group comes to rest after a drop or a turn
+function settle(g, fallback) {
+  let joined, locked = false, slotted = false;
+  const tol = .34 * Math.min(G.pw, G.ph);
+  [g, joined] = tryJoin(g, tol);
+  if (!g.locked && g.rot === 0 && Math.abs(g.ox) < tol && Math.abs(g.oy) < tol) { lock(g); locked = true; }
+  if (!g.locked && !(joined && g.slotted) && pivotInFrame(g)) {
+    const pose = slotPose(g);
+    const occ = pose ? cellsAt(g, g.rot, pose[0], pose[1]).map(([r, c]) => occupant(r, c, g)) : [];
+    if (!pose || occ.some(o => o && o.locked)) {
+      fallback(g);
+    } else {
+      new Set(occ.filter(Boolean)).forEach(bump);
+      moveTo(g, pose[0], pose[1], 120);
+      if (g.rot === 0 && Math.abs(pose[0]) < 1e-6 && Math.abs(pose[1]) < 1e-6) { lock(g); locked = true; }
+      else {
+        g.slotted = true; slotted = true;
+        let j2; [g, j2] = tryJoin(g, 1); joined = joined || j2;
+      }
+    }
+  } else if (!g.locked && !g.slotted) clampGroup(g);
+  if (locked || g.locked) click(1); else if (joined) click(.7); else if (slotted) click(.25, true);
+  status();
+  if ([...G.groups.values()].every(x => x.locked)) finish();
+  draw();
+}
+
+function turn(g) {
+  const [px, py] = pivot(g);
+  const nr = (g.rot + 1) & 3;
+  let sx = 0, sy = 0;
+  for (const p of g.pieces) { const [x, y] = rotV(nr, ...homeCentre(p)); sx += x; sy += y; }
+  g.ox = px - sx / g.pieces.length; g.oy = py - sy / g.pieces.length; g.rot = nr;
+  g.anim = { kind: 'turn', px, py, t0: performance.now(), d: 170 };
+  G.didTurn = true;
+}
+
+function endDrag() {
+  if (!G.drag) return;
+  const D = G.drag; G.drag = null; cvs.classList.remove('dragging');
+  const g = G.groups.get(D.g);
+  if (!D.moved) {
+    g.ox = D.ox; g.oy = D.oy;
+    if (G.turned && performance.now() - D.t < 450) {
+      turn(g);
+      if (D.slotted) settle(g, x => bump(x));
+      else { const [gg, j] = tryJoin(g, .34 * Math.min(G.pw, G.ph)); if (j) click(.7); clampGroup(gg); status(); if ([...G.groups.values()].every(x => x.locked)) finish(); }
+    } else g.slotted = D.slotted;
+    draw();
+    return;
+  }
+  settle(g, x => { x.slotted = D.slotted; moveTo(x, D.ox, D.oy, 300); });
+}
+cvs.addEventListener('pointerup', endDrag);
+cvs.addEventListener('pointercancel', endDrag);
+
+function clampGroup(g) {
+  const { cw, ch, fx, fy, sc } = G.L, b = rect(g);
+  const left = fx + b.x0 * sc, right = fx + b.x1 * sc, top = fy + b.y0 * sc, bot = fy + b.y1 * sc;
+  const keep = Math.min(G.pw, G.ph) * sc * .5;
+  if (right < keep) g.ox += (keep - right) / sc;
+  if (left > cw - keep) g.ox -= (left - cw + keep) / sc;
+  if (bot < keep) g.oy += (keep - bot) / sc;
+  if (top > ch - keep) g.oy -= (top - ch + keep) / sc;
+}
+
+function ensureAudio() { if (!G.audio) { try { G.audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { G.audio = false; } } }
+function click(strength, soft) {
+  if (!G.audio) return;
+  try {
+    const a = G.audio, t = a.currentTime, o = a.createOscillator(), gn = a.createGain();
+    o.type = soft ? 'sine' : 'triangle';
+    o.frequency.setValueAtTime(soft ? 300 : strength > .8 ? 1400 : 900, t); o.frequency.exponentialRampToValueAtTime(soft ? 160 : 380, t + .05);
+    gn.gain.setValueAtTime(.12 * strength, t); gn.gain.exponentialRampToValueAtTime(.0001, t + .08);
+    o.connect(gn).connect(a.destination); o.start(t); o.stop(t + .09);
+  } catch (e) {}
+}
+
+// ---------- clock & status ----------
+function fmt(ms) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+let clockTimer = 0;
+function tick() {
+  clearTimeout(clockTimer);
+  if (G.started && !G.done) { G.elapsed = performance.now() - G.started; clockTimer = setTimeout(tick, 500); }
+  document.getElementById('clock').textContent = fmt(G.elapsed);
+}
+function status() {
+  const placed = G.pieces.filter(p => G.groups.get(p.g).locked).length;
+  document.getElementById('placed').innerHTML = `<b>${placed}</b>/${G.pieces.length} in place`;
+  document.getElementById('peeks').textContent = G.peeks ? `${G.peeks} peek${G.peeks > 1 ? 's' : ''}` : '';
+}
+function finish() {
+  if (G.done) return;
+  G.done = true; G.elapsed = performance.now() - G.started; tick();
+  G.makeAlt();
+  G.reveal = { t0: performance.now(), toAlt: true, t1: 0 };
+  click(1); setTimeout(() => click(.8), 120);
+  draw();
+}
+
+// ---------- setup ----------
+function newGame() {
+  G.seed = G.today ? todaySeed() : 1000 + Math.floor(Math.random() * 9000);
+  G.started = 0; G.elapsed = 0; G.peeks = 0; G.done = false; G.reveal = null; G.drag = null; G.didTurn = false;
+  buildPuzzle(); layout(); scatter(true); status(); tick();
+  cvs.setAttribute('aria-label', `Jigsaw of city number ${G.seed}, ${G.n} pieces${G.turned ? ', pieces turned' : ''}. Drag pieces into the frame${G.turned ? '; tap a piece to turn it' : ''}.`);
+}
+
+function pressed(ids, on) { ids.forEach(id => document.getElementById(id).setAttribute('aria-pressed', id === on)); }
+document.getElementById('c-today').onclick = () => { G.today = true; pressed(['c-today', 'c-random'], 'c-today'); newGame(); };
+document.getElementById('c-random').onclick = () => { G.today = false; pressed(['c-today', 'c-random'], 'c-random'); newGame(); };
+document.getElementById('t-night').onclick = () => { G.day = false; pressed(['t-night', 't-day'], 't-night'); newGame(); };
+document.getElementById('t-day').onclick = () => { G.day = true; pressed(['t-night', 't-day'], 't-day'); newGame(); };
+const sizes = document.getElementById('sizes');
+function buildSizes() {
+  sizes.innerHTML = '';
+  const keys = Object.keys(sizesFor()).map(Number);
+  if (!keys.includes(G.n)) G.n = keys.reduce((a, b) => Math.abs(b - G.n) < Math.abs(a - G.n) ? b : a);
+  keys.forEach(n => {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = n;
+    b.setAttribute('aria-pressed', n === G.n); b.setAttribute('aria-label', n + ' pieces');
+    b.onclick = () => { G.n = n; sizes.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b)); newGame(); };
+    sizes.appendChild(b);
+  });
+}
+document.getElementById('m-up').onclick = () => { G.turned = false; pressed(['m-up', 'm-turn'], 'm-up'); buildSizes(); newGame(); };
+document.getElementById('m-turn').onclick = () => { G.turned = true; pressed(['m-up', 'm-turn'], 'm-turn'); buildSizes(); newGame(); };
+buildSizes();
+const peek = document.getElementById('peek');
+const peekOn = e => { e.preventDefault(); if (G.done || G.peeking) return; G.peeking = true; G.peeks++; peek.classList.add('on'); status(); draw(); };
+const peekOff = () => { if (!G.peeking) return; G.peeking = false; peek.classList.remove('on'); draw(); };
+peek.addEventListener('pointerdown', peekOn);
+peek.addEventListener('pointerup', peekOff); peek.addEventListener('pointerleave', peekOff); peek.addEventListener('pointercancel', peekOff);
+peek.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') peekOn(e); });
+peek.addEventListener('keyup', peekOff);
+document.getElementById('spread').onclick = () => { if (!G.done) scatter(false); };
+
+let rz = 0;
+window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => {
+  layout(); for (const g of G.groups.values()) if (!g.locked && !g.slotted) clampGroup(g); draw();
+}, 150); });
+
+newGame();
+</script>
+
